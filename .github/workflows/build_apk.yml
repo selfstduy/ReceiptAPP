@@ -18,9 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git zip unzip \
+            git zip unzip wget \
             openjdk-17-jdk \
-            ant \
             build-essential \
             autoconf automake libtool \
             pkg-config \
@@ -30,7 +29,7 @@ jobs:
             cmake \
             python3-pip python3-venv python3-setuptools
 
-      - name: 缓存 buildozer 全局目录（SDK/NDK 等）
+      - name: 缓存 buildozer 全局目录
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
@@ -38,18 +37,33 @@ jobs:
           restore-keys: |
             buildozer-${{ runner.os }}-
 
-      - name: 预先接受所有 Android SDK 许可协议（含预览版）
+      - name: 安装 Android SDK cmdline-tools 并接受许可证
         run: |
-          mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
-          # 正式版 SDK 许可
-          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4408b1c4ae2113f8e3a5596b642b\nd56f5187479451eabf01fb78af6dfcb131a6481e" \
-            > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
-          # 预览版许可（RC/preview build-tools 需要这个）
-          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910" \
-            > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
-          # Intel 扩展许可
-          printf "\n33b6937101b8927399a26b55d96baa156b6de15f" \
-            > ~/.buildozer/android/platform/android-sdk/licenses/intel-android-extra-license
+          SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK_DIR/cmdline-tools"
+
+          # 下载 Android cmdline-tools
+          wget -q "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+            -O /tmp/cmdline-tools.zip
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/
+          mv /tmp/cmdline-tools "$SDK_DIR/cmdline-tools/latest"
+
+          # 创建 buildozer 所需的旧版兼容路径 tools/bin/sdkmanager
+          mkdir -p "$SDK_DIR/tools/bin"
+          ln -sf "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" "$SDK_DIR/tools/bin/sdkmanager"
+          ln -sf "$SDK_DIR/cmdline-tools/latest/bin/avdmanager"  "$SDK_DIR/tools/bin/avdmanager"
+
+          export ANDROID_SDK_ROOT="$SDK_DIR"
+          SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+
+          # 接受所有 SDK 许可证（含预览版）
+          yes | "$SDKMANAGER" --licenses || true
+
+          # 安装必要 SDK 组件（稳定版 build-tools）
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2"
 
       - name: 安装 Python 构建工具
         run: |
