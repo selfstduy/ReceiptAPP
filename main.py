@@ -4,6 +4,8 @@ import os
 import re
 import math
 import json
+import threading
+import shutil
 from datetime import datetime, timedelta
 from kivy.lang import Builder
 from kivy.clock import Clock
@@ -442,9 +444,26 @@ class ReceiptApp(MDApp):
             App.get_running_app().stop()
             sys.exit(0)
 
+    def _copy_to_local(self, src_path):
+        """
+        Android Scoped Storage 兼容：将外部选取的图片复制到 App 私有目录。
+        App 私有目录无需存储权限，PIL/Kivy Image 均可直接读取。
+        """
+        try:
+            local_path = self.get_safe_image_path()
+            shutil.copy(src_path, local_path)
+            return local_path
+        except Exception as e:
+            print(f"[copy_to_local] 复制失败({src_path}): {e}")
+            return src_path  # 回退到原路径，仍可能失败但已尽力
+
     def on_file_selected(self, selection):
         if selection and len(selection) > 0:
-            self.on_image_selected(selection[0])
+            path = selection[0]
+            if platform == 'android':
+                # Android 11+ Scoped Storage：先复制到私有目录再处理
+                path = self._copy_to_local(path)
+            self.on_image_selected(path)
 
     def on_image_selected(self, img_path):
         """图片选择回调"""
@@ -610,172 +629,165 @@ class ReceiptApp(MDApp):
             raise
 
     def ocr_recognize(self, img_path, retry_count=0):
-        """OCR识别"""
+        """OCR识别 —— 在后台线程执行网络请求，避免主线程阻塞导致白屏"""
         if not TENCENT_SDK_AVAILABLE:
             self.show_dialog("腾讯云OCR SDK未安装，无法进行识别")
             return
-            
-        try:
-            ocr_client = self._init_ocr_client()
 
-            self.ocr_result = {
-                "no": {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
-                "name": {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
-                "qty": {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
-                "batch": {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
-                "date": {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0}
-            }
-
+        def _run():
             try:
-                with open(img_path, 'rb') as f:
-                    image_data = f.read()
-                    image_base64 = base64.b64encode(image_data).decode()
-            except Exception as e:
-                self.show_dialog(f"图片读取失败: {str(e)}")
-                return
+                ocr_client = self._init_ocr_client()
 
-            req = models.GeneralBasicOCRRequest()
-            req.ImageBase64 = image_base64
-            req.IsWords = True
-            resp = ocr_client.GeneralBasicOCR(req)
+                result = {
+                    "no":    {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
+                    "name":  {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
+                    "qty":   {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
+                    "batch": {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
+                    "date":  {"text":"", "x":0, "y":0, "corrected_x":0, "corrected_y":0},
+                }
 
-            all_texts = []
-            ref_points = {
-                "参考凭证": {"x": 0, "y": 0},
-                "No": {"x": 0, "y": 0},
-                "收货工厂": {"x": 0, "y": 0},
-                "品名_表头": {"x": 0, "y": 0},
-                "数量_表头": {"x": 0, "y": 0},
-                "批次_表头": {"x": 0, "y": 0},
-                "点收日期": {"x": 0, "y": 0}
-            }
+                try:
+                    with open(img_path, 'rb') as f:
+                        image_base64 = base64.b64encode(f.read()).decode()
+                except Exception as e:
+                    Clock.schedule_once(lambda dt, msg=str(e): self.show_dialog(f"图片读取失败: {msg}"), 0)
+                    return
 
-            for item in resp.TextDetections:
-                text = item.DetectedText.strip()
-                polygon = item.Polygon
-                left_top_x = polygon[0].X
-                left_top_y = polygon[0].Y
-                center_x = (polygon[0].X + polygon[2].X) / 2
-                center_y = (polygon[0].Y + polygon[2].Y) / 2
-                
-                all_texts.append({
-                    "text": text,
-                    "left_top_x": left_top_x,
-                    "left_top_y": left_top_y,
-                    "center_x": center_x,
-                    "center_y": center_y
-                })
+                req = models.GeneralBasicOCRRequest()
+                req.ImageBase64 = image_base64
+                req.IsWords = True
+                resp = ocr_client.GeneralBasicOCR(req)
 
-                if "参考凭证" in text:
-                    ref_points["参考凭证"]["x"] = left_top_x
-                    ref_points["参考凭证"]["y"] = left_top_y
-                elif any(k in text.upper() for k in ["N0", "NO", "NO."]):
-                    ref_points["No"]["x"] = left_top_x
-                    ref_points["No"]["y"] = left_top_y
-                elif "收货工厂" in text:
-                    ref_points["收货工厂"]["x"] = left_top_x
-                    ref_points["收货工厂"]["y"] = left_top_y
-                elif text in ["品名","晶名"] :
-                    ref_points["品名_表头"]["x"] = center_x
-                    ref_points["品名_表头"]["y"] = center_y
-                elif text in ["数量", "数船"] :
-                    ref_points["数量_表头"]["x"] = center_x
-                    ref_points["数量_表头"]["y"] = center_y
-                elif text in ["批次", "业次"]:
-                    ref_points["批次_表头"]["x"] = center_x
-                    ref_points["批次_表头"]["y"] = center_y
-                elif "点收日期" in text:
-                    ref_points["点收日期"]["x"] = center_x
-                    ref_points["点收日期"]["y"] = center_y
+                all_texts = []
+                ref_points = {
+                    "参考凭证": {"x": 0, "y": 0},
+                    "No":      {"x": 0, "y": 0},
+                    "收货工厂":  {"x": 0, "y": 0},
+                    "品名_表头": {"x": 0, "y": 0},
+                    "数量_表头": {"x": 0, "y": 0},
+                    "批次_表头": {"x": 0, "y": 0},
+                    "点收日期":  {"x": 0, "y": 0},
+                }
 
-            self._calculate_coordinate_correction(ref_points)
-            ref_voucher_center = (ref_points["参考凭证"]["x"], ref_points["参考凭证"]["y"])
-            corrected_ref_voucher = self._correct_coordinate(*ref_voucher_center)
-            corrected_product_header = self._correct_coordinate(ref_points["品名_表头"]["x"], ref_points["品名_表头"]["y"])
+                for item in resp.TextDetections:
+                    text = item.DetectedText.strip()
+                    polygon = item.Polygon
+                    left_top_x = polygon[0].X
+                    left_top_y = polygon[0].Y
+                    center_x = (polygon[0].X + polygon[2].X) / 2
+                    center_y = (polygon[0].Y + polygon[2].Y) / 2
 
-            for item in all_texts:
-                text = item["text"]
-                center_x = item["center_x"]
-                center_y = item["center_y"]
-                corrected_x, corrected_y = self._correct_coordinate(center_x, center_y)
-                
-                if self.ocr_result["no"]["text"] == "":
-                    if "参考凭证" in text or "NO." in text:
-                        num_match = re.search(r'(\d{10})', text)
-                        if num_match:
-                            self.ocr_result["no"]["text"] = num_match.group(1)
-                            self.ocr_result["no"]["x"] = center_x
-                            self.ocr_result["no"]["y"] = center_y
-                            self.ocr_result["no"]["corrected_x"] = corrected_x
-                            self.ocr_result["no"]["corrected_y"] = corrected_y
-                    elif re.match(r'^\d{10}$', text):
-                        distance_to_x_line = abs(corrected_y - corrected_ref_voucher[1])
-                        if distance_to_x_line < 30:
-                            self.ocr_result["no"]["text"] = text
-                            self.ocr_result["no"]["x"] = center_x
-                            self.ocr_result["no"]["y"] = center_y
-                            self.ocr_result["no"]["corrected_x"] = corrected_x
-                            self.ocr_result["no"]["corrected_y"] = corrected_y
+                    all_texts.append({
+                        "text": text,
+                        "left_top_x": left_top_x,
+                        "left_top_y": left_top_y,
+                        "center_x": center_x,
+                        "center_y": center_y,
+                    })
 
-                if self.ocr_result["date"]["text"] == "" and (
-                        re.match(r'^\d{4}\.\d{2}\.\d{2}$', text) or 
-                        re.match(r'^\d{4},\d{2}\.\d{2}$', text) or 
-                        re.match(r'^\d{4}.\d{2}\,\d{2}$', text) or 
+                    if "参考凭证" in text:
+                        ref_points["参考凭证"]["x"] = left_top_x
+                        ref_points["参考凭证"]["y"] = left_top_y
+                    elif any(k in text.upper() for k in ["N0", "NO", "NO."]):
+                        ref_points["No"]["x"] = left_top_x
+                        ref_points["No"]["y"] = left_top_y
+                    elif "收货工厂" in text:
+                        ref_points["收货工厂"]["x"] = left_top_x
+                        ref_points["收货工厂"]["y"] = left_top_y
+                    elif text in ["品名", "晶名"]:
+                        ref_points["品名_表头"]["x"] = center_x
+                        ref_points["品名_表头"]["y"] = center_y
+                    elif text in ["数量", "数船"]:
+                        ref_points["数量_表头"]["x"] = center_x
+                        ref_points["数量_表头"]["y"] = center_y
+                    elif text in ["批次", "业次"]:
+                        ref_points["批次_表头"]["x"] = center_x
+                        ref_points["批次_表头"]["y"] = center_y
+                    elif "点收日期" in text:
+                        ref_points["点收日期"]["x"] = center_x
+                        ref_points["点收日期"]["y"] = center_y
+
+                self._calculate_coordinate_correction(ref_points)
+                ref_voucher_center = (ref_points["参考凭证"]["x"], ref_points["参考凭证"]["y"])
+                corrected_ref_voucher = self._correct_coordinate(*ref_voucher_center)
+                corrected_product_header = self._correct_coordinate(
+                    ref_points["品名_表头"]["x"], ref_points["品名_表头"]["y"]
+                )
+
+                for item in all_texts:
+                    text = item["text"]
+                    center_x = item["center_x"]
+                    center_y = item["center_y"]
+                    corrected_x, corrected_y = self._correct_coordinate(center_x, center_y)
+
+                    if result["no"]["text"] == "":
+                        if "参考凭证" in text or "NO." in text:
+                            num_match = re.search(r'(\d{10})', text)
+                            if num_match:
+                                result["no"].update({"text": num_match.group(1), "x": center_x, "y": center_y,
+                                                     "corrected_x": corrected_x, "corrected_y": corrected_y})
+                        elif re.match(r'^\d{10}$', text):
+                            if abs(corrected_y - corrected_ref_voucher[1]) < 30:
+                                result["no"].update({"text": text, "x": center_x, "y": center_y,
+                                                     "corrected_x": corrected_x, "corrected_y": corrected_y})
+
+                    if result["date"]["text"] == "" and (
+                        re.match(r'^\d{4}\.\d{2}\.\d{2}$', text) or
+                        re.match(r'^\d{4},\d{2}\.\d{2}$', text) or
+                        re.match(r'^\d{4}.\d{2}\,\d{2}$', text) or
                         re.match(r'^\d{4},\d{2}\,\d{2}$', text)
                     ):
-                    if corrected_y > corrected_ref_voucher[1] + 20 and corrected_y < corrected_ref_voucher[1] + 80:
-                        self.ocr_result["date"]["text"] = text
-                        self.ocr_result["date"]["x"] = center_x
-                        self.ocr_result["date"]["y"] = center_y
-                        self.ocr_result["date"]["corrected_x"] = corrected_x
-                        self.ocr_result["date"]["corrected_y"] = corrected_y
+                        if corrected_ref_voucher[1] + 20 < corrected_y < corrected_ref_voucher[1] + 80:
+                            result["date"].update({"text": text, "x": center_x, "y": center_y,
+                                                   "corrected_x": corrected_x, "corrected_y": corrected_y})
 
-                if corrected_product_header[1] > 0:
-                    if self.ocr_result["name"]["text"] == "" and re.match(r'^\d+$', text):
-                        x_diff = abs(corrected_x - corrected_product_header[0])
-                        y_diff = corrected_y - corrected_product_header[1]
-                        if x_diff < 30 and y_diff > 10 and y_diff < 60:
-                            self.ocr_result["name"]["text"] = text
-                            self.ocr_result["name"]["x"] = center_x
-                            self.ocr_result["name"]["y"] = center_y
-                            self.ocr_result["name"]["corrected_x"] = corrected_x
-                            self.ocr_result["name"]["corrected_y"] = corrected_y
-                    
-                    elif self.ocr_result["qty"]["text"] == "" and re.match(r'^\d+,\d+$', text):
-                        corrected_qty_header = self._correct_coordinate(ref_points["数量_表头"]["x"], ref_points["数量_表头"]["y"])
-                        x_diff = abs(corrected_x - corrected_qty_header[0])
-                        y_diff = corrected_y - corrected_product_header[1]
-                        if x_diff < 30 and y_diff > 10 and y_diff < 60:
-                            self.ocr_result["qty"]["text"] = text
-                            self.ocr_result["qty"]["x"] = center_x
-                            self.ocr_result["qty"]["y"] = center_y
-                            self.ocr_result["qty"]["corrected_x"] = corrected_x
-                            self.ocr_result["qty"]["corrected_y"] = corrected_y
-                    
-                    elif self.ocr_result["batch"]["text"] == "" and re.match(r'^\d+$', text):
-                        corrected_batch_header = self._correct_coordinate(ref_points["批次_表头"]["x"], ref_points["批次_表头"]["y"])
-                        x_diff = abs(corrected_x - corrected_batch_header[0])
-                        y_diff = corrected_y - corrected_product_header[1]
-                        if x_diff < 30 and y_diff > 10 and y_diff < 60:
-                            self.ocr_result["batch"]["text"] = text
-                            self.ocr_result["batch"]["x"] = center_x
-                            self.ocr_result["batch"]["y"] = center_y
-                            self.ocr_result["batch"]["corrected_x"] = corrected_x
-                            self.ocr_result["batch"]["corrected_y"] = corrected_y
+                    if corrected_product_header[1] > 0:
+                        if result["name"]["text"] == "" and re.match(r'^\d+$', text):
+                            x_diff = abs(corrected_x - corrected_product_header[0])
+                            y_diff = corrected_y - corrected_product_header[1]
+                            if x_diff < 30 and 10 < y_diff < 60:
+                                result["name"].update({"text": text, "x": center_x, "y": center_y,
+                                                       "corrected_x": corrected_x, "corrected_y": corrected_y})
+                        elif result["qty"]["text"] == "" and re.match(r'^\d+,\d+$', text):
+                            corrected_qty_header = self._correct_coordinate(
+                                ref_points["数量_表头"]["x"], ref_points["数量_表头"]["y"]
+                            )
+                            x_diff = abs(corrected_x - corrected_qty_header[0])
+                            y_diff = corrected_y - corrected_product_header[1]
+                            if x_diff < 30 and 10 < y_diff < 60:
+                                result["qty"].update({"text": text, "x": center_x, "y": center_y,
+                                                      "corrected_x": corrected_x, "corrected_y": corrected_y})
+                        elif result["batch"]["text"] == "" and re.match(r'^\d+$', text):
+                            corrected_batch_header = self._correct_coordinate(
+                                ref_points["批次_表头"]["x"], ref_points["批次_表头"]["y"]
+                            )
+                            x_diff = abs(corrected_x - corrected_batch_header[0])
+                            y_diff = corrected_y - corrected_product_header[1]
+                            if x_diff < 30 and 10 < y_diff < 60:
+                                result["batch"].update({"text": text, "x": center_x, "y": center_y,
+                                                        "corrected_x": corrected_x, "corrected_y": corrected_y})
 
-            self._update_editable_labels()
-            self.position_labels()
+                # 回主线程更新 UI
+                def _apply(dt):
+                    self.ocr_result = result
+                    self._update_editable_labels()
+                    # 等图片控件完成布局后再定位标签
+                    Clock.schedule_once(lambda dt2: self.position_labels(), 0.2)
+                Clock.schedule_once(_apply, 0)
 
-        except TencentCloudSDKException as err:
-            error_msg = err.message if hasattr(err, 'message') else str(err)
-            if any(keyword in error_msg for keyword in ["ExpiredToken", "InvalidCredential", "AuthFailure"]) and retry_count < FIXED_CONFIG["ocr_retry_times"]:
-                print(f"OCR认证失效，正在重试（{retry_count+1}/{FIXED_CONFIG['ocr_retry_times']}）: {error_msg}")
-                self._init_ocr_client(force_recreate=True)
-                self.ocr_recognize(img_path, retry_count + 1)
-            else:
-                self.show_dialog(f"OCR识别错误: {error_msg}")
-        except Exception as e:
-            self.show_dialog(f"识别错误: {str(e)}")
+            except TencentCloudSDKException as err:
+                error_msg = err.message if hasattr(err, 'message') else str(err)
+                if any(k in error_msg for k in ["ExpiredToken", "InvalidCredential", "AuthFailure"]) \
+                        and retry_count < FIXED_CONFIG["ocr_retry_times"]:
+                    print(f"OCR认证失效，重试({retry_count+1}): {error_msg}")
+                    self._init_ocr_client(force_recreate=True)
+                    Clock.schedule_once(lambda dt: self.ocr_recognize(img_path, retry_count + 1), 0)
+                else:
+                    Clock.schedule_once(lambda dt, msg=error_msg: self.show_dialog(f"OCR识别错误: {msg}"), 0)
+            except Exception as e:
+                Clock.schedule_once(lambda dt, msg=str(e): self.show_dialog(f"识别错误: {msg}"), 0)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _update_editable_labels(self):
         """更新标签内容"""
