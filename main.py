@@ -393,14 +393,20 @@ class ReceiptApp(MDApp):
         
         if platform == 'android':
             try:
-                file = File(self.current_img_path)
-                context = cast(Context, mActivity.getApplicationContext())
+                from jnius import autoclass, cast
+                from android import mActivity
+                _File        = autoclass('java.io.File')
+                _FileProvider = autoclass('androidx.core.content.FileProvider')
+                _Context     = autoclass('android.content.Context')
+                _Intent      = autoclass('android.content.Intent')
+                file = _File(self.current_img_path)
+                context = cast(_Context, mActivity.getApplicationContext())
                 authority = context.getPackageName() + ".fileprovider"
-                content_uri = FileProvider.getUriForFile(context, authority, file)
+                content_uri = _FileProvider.getUriForFile(context, authority, file)
                 context.grantUriPermission(
                     context.getPackageName(),
                     content_uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    _Intent.FLAG_GRANT_READ_URI_PERMISSION | _Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
             except Exception as e:
                 self.show_dialog(f"相机配置错误: {str(e)}")
