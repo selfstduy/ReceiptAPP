@@ -1,0 +1,19 @@
+# 运行时配置（含密钥，不提交到 git）
+config/app_config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Buildozer 构建缓存
+.buildozer/
+bin/
+
+# 虚拟环境
+app/
+*.egg-info/
+
+# 系统文件
+.DS_Store
+Thumbs.db

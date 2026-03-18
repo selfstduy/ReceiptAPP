@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 仅保留配置文件/图片保存路径（删除多余的cache路径） -->
+    <external-files-path name="external_files" path="."/>
+    <files-path name="internal_files" path="."/>
+</paths>
