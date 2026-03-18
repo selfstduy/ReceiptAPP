@@ -220,93 +220,8 @@ FloatLayout:
             on_press: app.exit_app()
 '''
 
-# ====================== 设置对话框布局 ======================
-SETTINGS_DIALOG_KV = '''
-MDBoxLayout:
-    orientation: "vertical"
-    spacing: "15dp"
-    padding: ["20dp", "20dp", "20dp", "30dp"]
-    size_hint: 1, None
-    height: self.minimum_height
-    pos_hint: {"top": 1}
-    
-    MDLabel:
-        text: "系统配置"
-        font_name: "Chinese"
-        font_size: 22
-        bold: True
-        size_hint_y: None
-        height: "50dp"
-        halign: "center"
-    
-    # OCR Secret ID
-    MDTextField:
-        id: ocr_secret_id
-        hint_text: "OCR Secret ID"
-        font_name: "Chinese"
-        size_hint_y: None
-        height: "50dp"
-        multiline: False
-        font_size: 16
-        padding: "10dp"
-    
-    # OCR Secret Key
-    MDTextField:
-        id: ocr_secret_key
-        hint_text: "OCR Secret Key"
-        font_name: "Chinese"
-        size_hint_y: None
-        height: "50dp"
-        multiline: False
-        font_size: 16
-        padding: "10dp"
-    
-    # Webhook URL
-    MDTextField:
-        id: webhook_url
-        hint_text: "企微表格Webhook URL"
-        font_name: "Chinese"
-        size_hint_y: None
-        height: "50dp"
-        multiline: False
-        font_size: 16
-        padding: "10dp"
-    
-    # 字段映射配置
-    MDTextField:
-        id: field_mapping
-        hint_text: "字段映射（JSON格式）"
-        font_name: "Chinese"
-        size_hint_y: None
-        height: "100dp"
-        multiline: True
-        font_size: 14
-        padding: "10dp"
-    
-    # 按钮行
-    MDBoxLayout:
-        orientation: "horizontal"
-        spacing: "30dp"
-        size_hint_y: None
-        height: "60dp"
-        pos_hint: {"center_x": 0.5, "top": 1}
-        
-        MDFillRoundFlatButton:
-            id: save_btn
-            text: "保存"
-            font_name: "Chinese"
-            md_bg_color: "#4CAF50"
-            size_hint: (0.4, 1)
-            font_size: 18
-        
-        MDFillRoundFlatButton:
-            id: cancel_btn
-            text: "取消"
-            font_name: "Chinese"
-            md_bg_color: "#F44336"
-            size_hint: (0.4, 1)
-            font_size: 18
-'''
+# ====================== 设置对话框布局（纯原生 Kivy，避免 MDDialog 在 Android 段错误） ======================
+# 不再使用 SETTINGS_DIALOG_KV，改为在代码里动态创建控件
 
 # ====================== 可编辑标签 ======================
 class EditableLabel(Label):
@@ -990,72 +905,145 @@ class ReceiptApp(MDApp):
         self.popup.open()
 
     def open_settings_dialog(self):
-        """打开设置对话框"""
+        """打开设置对话框（纯原生 Popup，避免 MDDialog 在 Android 上的 SIGSEGV）"""
         try:
-            settings_content = Builder.load_string(SETTINGS_DIALOG_KV)
-            
-            # 填充配置
-            settings_content.ids.ocr_secret_id.text = WEWORK_CONFIG["ocr_secret_id"]
-            settings_content.ids.ocr_secret_key.text = WEWORK_CONFIG["ocr_secret_key"]
-            settings_content.ids.webhook_url.text = WEWORK_CONFIG["webhook_url"]
-            settings_content.ids.field_mapping.text = json.dumps(WEWORK_CONFIG["field_mapping"], ensure_ascii=False, indent=2)
-            
-            # 绑定按钮事件
-            settings_content.ids.save_btn.bind(on_press=lambda x: self.save_settings(settings_content))
-            settings_content.ids.cancel_btn.bind(on_press=lambda x: self.close_settings_dialog())
-            
-            # 创建设置对话框
-            self.settings_dialog = MDDialog(
-                title="系统配置",
-                type="custom",
-                content_cls=settings_content,
-                size_hint=(0.95, 0.8),
-                pos_hint={"top": 1},
-                auto_dismiss=False
+            from kivy.uix.scrollview import ScrollView
+
+            # ---- 输入框 ----
+            def make_input(hint, text='', multiline=False, height=45):
+                ti = TextInput(
+                    hint_text=hint,
+                    text=text,
+                    font_name='Chinese',
+                    font_size=15,
+                    multiline=multiline,
+                    size_hint_y=None,
+                    height=height,
+                    padding=[8, 8, 8, 8],
+                    background_color=(1, 1, 1, 1),
+                    foreground_color=(0, 0, 0, 1),
+                )
+                return ti
+
+            self._set_ocr_id  = make_input('OCR Secret ID',  WEWORK_CONFIG.get('ocr_secret_id', ''))
+            self._set_ocr_key = make_input('OCR Secret Key', WEWORK_CONFIG.get('ocr_secret_key', ''))
+            self._set_webhook = make_input('企微 Webhook URL', WEWORK_CONFIG.get('webhook_url', ''))
+            self._set_mapping = make_input(
+                '字段映射（JSON）',
+                json.dumps(WEWORK_CONFIG.get('field_mapping', {}), ensure_ascii=False, indent=2),
+                multiline=True,
+                height=120,
             )
+
+            # ---- 按钮 ----
+            def make_btn(text, bg):
+                from kivy.uix.button import Button
+                btn = Button(
+                    text=text,
+                    font_name='Chinese',
+                    font_size=17,
+                    background_normal='',
+                    background_color=bg,
+                    color=(1, 1, 1, 1),
+                    size_hint=(0.45, 1),
+                )
+                return btn
+
+            save_btn   = make_btn('保存', (0.298, 0.686, 0.314, 1))
+            cancel_btn = make_btn('取消', (0.957, 0.263, 0.212, 1))
+
+            btn_row = BoxLayout(orientation='horizontal', size_hint_y=None, height=55, spacing=20)
+            btn_row.add_widget(save_btn)
+            btn_row.add_widget(cancel_btn)
+
+            # ---- 整体布局 ----
+            title_lbl = Label(
+                text='系统配置',
+                font_name='Chinese',
+                font_size=20,
+                bold=True,
+                size_hint_y=None,
+                height=45,
+                color=(0, 0, 0, 1),
+            )
+
+            inner = BoxLayout(
+                orientation='vertical',
+                spacing=12,
+                padding=[15, 15, 15, 15],
+                size_hint_y=None,
+            )
+            for w in [title_lbl,
+                      Label(text='OCR Secret ID', font_name='Chinese', font_size=13,
+                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
+                      self._set_ocr_id,
+                      Label(text='OCR Secret Key', font_name='Chinese', font_size=13,
+                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
+                      self._set_ocr_key,
+                      Label(text='企微 Webhook URL', font_name='Chinese', font_size=13,
+                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
+                      self._set_webhook,
+                      Label(text='字段映射（JSON）', font_name='Chinese', font_size=13,
+                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
+                      self._set_mapping,
+                      btn_row]:
+                inner.add_widget(w)
+
+            inner.bind(minimum_height=inner.setter('height'))
+
+            scroll = ScrollView(size_hint=(1, 1))
+            scroll.add_widget(inner)
+
+            self.settings_dialog = Popup(
+                title='',
+                content=scroll,
+                size_hint=(0.95, 0.88),
+                auto_dismiss=False,
+                separator_height=0,
+            )
+
+            save_btn.bind(on_press=lambda _: self._save_settings_native())
+            cancel_btn.bind(on_press=lambda _: self.close_settings_dialog())
+
             self.settings_dialog.open()
         except Exception as e:
             self.show_dialog(f"打开设置失败: {str(e)}")
 
-    def save_settings(self, settings_layout):
-        """保存设置"""
+    def _save_settings_native(self):
+        """保存设置（配合原生 Popup 版本）"""
         global WEWORK_CONFIG
-        
         try:
             new_config = {
-                "ocr_secret_id": settings_layout.ids.ocr_secret_id.text.strip(),
-                "ocr_secret_key": settings_layout.ids.ocr_secret_key.text.strip(),
-                "webhook_url": settings_layout.ids.webhook_url.text.strip()
+                "ocr_secret_id": self._set_ocr_id.text.strip(),
+                "ocr_secret_key": self._set_ocr_key.text.strip(),
+                "webhook_url": self._set_webhook.text.strip(),
             }
-            
-            # 解析JSON
             try:
-                field_mapping_text = settings_layout.ids.field_mapping.text.strip()
-                if field_mapping_text:
-                    new_config["field_mapping"] = json.loads(field_mapping_text)
-                else:
-                    new_config["field_mapping"] = WEWORK_CONFIG["field_mapping"]
+                mapping_text = self._set_mapping.text.strip()
+                new_config["field_mapping"] = json.loads(mapping_text) if mapping_text else WEWORK_CONFIG["field_mapping"]
             except json.JSONDecodeError:
-                self.show_dialog("字段映射格式错误，请输入有效的JSON格式")
+                self.show_dialog("字段映射格式错误，请输入有效的 JSON 格式")
                 return
-            
-            # 验证必填项
+
             if not new_config["ocr_secret_id"] or not new_config["ocr_secret_key"] or not new_config["webhook_url"]:
-                self.show_dialog("Secret ID、Secret Key、Webhook URL不能为空")
+                self.show_dialog("Secret ID、Secret Key、Webhook URL 不能为空")
                 return
-            
-            # 保存配置
+
             if save_config(new_config):
                 WEWORK_CONFIG = new_config
                 self.ocr_client = None
                 self.ocr_credential = None
                 self.ocr_credential_create_time = None
-                self.show_dialog("配置保存成功！")
                 self.close_settings_dialog()
+                self.show_dialog("配置保存成功！")
             else:
-                self.show_dialog("配置保存失败，请检查权限")
+                self.show_dialog("配置保存失败，请检查存储权限")
         except Exception as e:
             self.show_dialog(f"保存配置失败: {str(e)}")
+
+    def save_settings(self, settings_layout):
+        """保存设置（兼容旧调用，转发到 _save_settings_native）"""
+        self._save_settings_native()
 
     def close_settings_dialog(self):
         """关闭设置对话框"""
