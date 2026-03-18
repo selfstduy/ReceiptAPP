@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     name: Build APK
-    runs-on: ubuntu-22.04   # 纯 Linux，无 WSL 兼容问题
+    runs-on: ubuntu-22.04
 
     steps:
       - name: 签出代码
@@ -24,7 +24,7 @@ jobs:
             libffi-dev libssl-dev cmake \
             python3-pip python3-venv
 
-      - name: 缓存 buildozer 全局目录（SDK/NDK 等，加速后续构建）
+      - name: 缓存 buildozer 全局目录（SDK/NDK 等）
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
@@ -35,17 +35,17 @@ jobs:
       - name: 安装 Python 构建工具
         run: |
           python3 -m pip install --upgrade pip
-          pip install setuptools cython buildozer
+          python3 -m pip install --user setuptools cython buildozer
+          # 确认安装成功
+          python3 -m buildozer --version
 
       - name: 构建 APK（debug）
         run: |
-          # 使用纯净 Linux PATH，确保 NDK 工具链正确
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-          buildozer -v android debug
+          python3 -m buildozer -v android debug
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
           name: receiptapp-debug-apk
           path: bin/*.apk
-          retention-days: 7   # 保留 7 天，可按需修改
+          retention-days: 7
