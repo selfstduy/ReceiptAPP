@@ -199,16 +199,17 @@ FloatLayout:
             pos: self.pos
             size: self.size
 
-    # 右上角设置按钮（用原生 Button 避免 MDIconButton 图标字体加载失败）
+    # 右上角设置按钮（纯文字，兼容所有 Android 字体）
     Button:
-        text: "\\u2699"
-        font_size: 28
-        pos_hint: {"right": 0.98, "top": 0.99}
+        text: "设置"
+        font_name: 'Chinese'
+        font_size: 16
+        pos_hint: {"right": 0.99, "top": 0.99}
         size_hint: None, None
-        size: (54, 54)
+        size: (72, 44)
         background_normal: ""
-        background_color: (0, 0, 0, 0)
-        color: (0.25, 0.25, 0.25, 1)
+        background_color: (0.2, 0.2, 0.2, 0.7)
+        color: (1, 1, 1, 1)
         on_press: app.open_settings_dialog()
     
     # 按钮容器
@@ -933,101 +934,120 @@ class ReceiptApp(MDApp):
         self.popup.open()
 
     def open_settings_dialog(self):
-        """打开设置对话框（纯原生 Popup，避免 MDDialog 在 Android 上的 SIGSEGV）"""
+        """打开设置对话框（纯原生 Popup，字号和控件均适配手机屏幕）"""
         try:
             from kivy.uix.scrollview import ScrollView
+            from kivy.uix.button import Button
+
+            # ---- 标签 ----
+            def make_label(text):
+                return Label(
+                    text=text,
+                    font_name='Chinese',
+                    font_size=18,
+                    size_hint_y=None,
+                    height=36,
+                    color=(0.15, 0.15, 0.15, 1),
+                    halign='left',
+                    valign='middle',
+                    text_size=(Window.width * 0.85, None),
+                )
 
             # ---- 输入框 ----
-            def make_input(hint, text='', multiline=False, height=45):
-                ti = TextInput(
+            def make_input(hint, text='', multiline=False, height=58):
+                return TextInput(
                     hint_text=hint,
                     text=text,
                     font_name='Chinese',
-                    font_size=15,
+                    font_size=18,
                     multiline=multiline,
                     size_hint_y=None,
                     height=height,
-                    padding=[8, 8, 8, 8],
-                    background_color=(1, 1, 1, 1),
+                    padding=[12, 10, 12, 10],
+                    background_color=(0.97, 0.97, 0.97, 1),
                     foreground_color=(0, 0, 0, 1),
+                    cursor_color=(0.2, 0.5, 1, 1),
                 )
-                return ti
 
-            self._set_ocr_id  = make_input('OCR Secret ID',  WEWORK_CONFIG.get('ocr_secret_id', ''))
-            self._set_ocr_key = make_input('OCR Secret Key', WEWORK_CONFIG.get('ocr_secret_key', ''))
-            self._set_webhook = make_input('企微 Webhook URL', WEWORK_CONFIG.get('webhook_url', ''))
+            self._set_ocr_id  = make_input('请输入 OCR Secret ID',  WEWORK_CONFIG.get('ocr_secret_id', ''))
+            self._set_ocr_key = make_input('请输入 OCR Secret Key', WEWORK_CONFIG.get('ocr_secret_key', ''))
+            self._set_webhook = make_input('请输入企微 Webhook URL', WEWORK_CONFIG.get('webhook_url', ''))
             self._set_mapping = make_input(
-                '字段映射（JSON）',
+                '字段映射 JSON',
                 json.dumps(WEWORK_CONFIG.get('field_mapping', {}), ensure_ascii=False, indent=2),
                 multiline=True,
-                height=120,
+                height=160,
             )
 
             # ---- 按钮 ----
             def make_btn(text, bg):
-                from kivy.uix.button import Button
-                btn = Button(
+                return Button(
                     text=text,
                     font_name='Chinese',
-                    font_size=17,
+                    font_size=20,
+                    bold=True,
                     background_normal='',
                     background_color=bg,
                     color=(1, 1, 1, 1),
-                    size_hint=(0.45, 1),
+                    size_hint=(0.46, 1),
                 )
-                return btn
 
-            save_btn   = make_btn('保存', (0.298, 0.686, 0.314, 1))
-            cancel_btn = make_btn('取消', (0.957, 0.263, 0.212, 1))
+            save_btn   = make_btn('保存', (0.18, 0.65, 0.18, 1))
+            cancel_btn = make_btn('取消', (0.85, 0.18, 0.18, 1))
 
-            btn_row = BoxLayout(orientation='horizontal', size_hint_y=None, height=55, spacing=20)
+            btn_row = BoxLayout(orientation='horizontal', size_hint_y=None, height=64, spacing=16)
             btn_row.add_widget(save_btn)
             btn_row.add_widget(cancel_btn)
 
-            # ---- 整体布局 ----
+            # ---- 标题 ----
             title_lbl = Label(
                 text='系统配置',
                 font_name='Chinese',
-                font_size=20,
+                font_size=24,
                 bold=True,
                 size_hint_y=None,
-                height=45,
-                color=(0, 0, 0, 1),
+                height=52,
+                color=(0.1, 0.1, 0.1, 1),
             )
 
+            # ---- 分隔线（用 BoxLayout 模拟） ----
+            def divider():
+                b = BoxLayout(size_hint_y=None, height=2)
+                b.canvas.before.add(__import__('kivy.graphics', fromlist=['Color']).Color(0.8, 0.8, 0.8, 1))
+                b.canvas.before.add(__import__('kivy.graphics', fromlist=['Rectangle']).Rectangle(pos=b.pos, size=b.size))
+                return b
+
+            # ---- 整体内容 ----
             inner = BoxLayout(
                 orientation='vertical',
-                spacing=12,
-                padding=[15, 15, 15, 15],
+                spacing=10,
+                padding=[18, 12, 18, 18],
                 size_hint_y=None,
             )
-            for w in [title_lbl,
-                      Label(text='OCR Secret ID', font_name='Chinese', font_size=13,
-                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
-                      self._set_ocr_id,
-                      Label(text='OCR Secret Key', font_name='Chinese', font_size=13,
-                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
-                      self._set_ocr_key,
-                      Label(text='企微 Webhook URL', font_name='Chinese', font_size=13,
-                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
-                      self._set_webhook,
-                      Label(text='字段映射（JSON）', font_name='Chinese', font_size=13,
-                            size_hint_y=None, height=22, color=(0.3,0.3,0.3,1), halign='left'),
-                      self._set_mapping,
-                      btn_row]:
+            items = [
+                title_lbl,
+                make_label('OCR Secret ID'),   self._set_ocr_id,
+                make_label('OCR Secret Key'),  self._set_ocr_key,
+                make_label('企微 Webhook URL'), self._set_webhook,
+                make_label('字段映射（JSON）'),  self._set_mapping,
+                BoxLayout(size_hint_y=None, height=10),  # 间距
+                btn_row,
+            ]
+            for w in items:
                 inner.add_widget(w)
-
             inner.bind(minimum_height=inner.setter('height'))
 
-            scroll = ScrollView(size_hint=(1, 1))
+            scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
             scroll.add_widget(inner)
 
             self.settings_dialog = Popup(
                 title='',
                 content=scroll,
-                size_hint=(0.95, 0.88),
+                size_hint=(0.96, 0.92),
                 auto_dismiss=False,
                 separator_height=0,
+                background='',
+                background_color=(1, 1, 1, 1),
             )
 
             save_btn.bind(on_press=lambda _: self._save_settings_native())
