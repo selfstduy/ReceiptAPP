@@ -458,72 +458,137 @@ class ReceiptApp(MDApp):
             return src_path  # 回退到原路径，仍可能失败但已尽力
 
     def on_file_selected(self, selection):
-        if selection and len(selection) > 0:
-            path = selection[0]
+        """plyer 回调（Android 上可能在非主线程调用），统一转后台线程处理"""
+        if not (selection and len(selection) > 0):
+            return
+        src_path = selection[0]
+        threading.Thread(
+            target=self._prepare_image_bg, args=(src_path,), daemon=True
+        ).start()
+
+    def _prepare_image_bg(self, src_path):
+        """
+        后台线程：
+        1. Android 上复制到私有目录（绕过 Scoped Storage 限制）
+        2. PIL 将图片调整到最大 1920px 并转换为标准 RGB JPEG
+           （避免 GPU 纹理尺寸超限导致 Kivy Image 静默空白）
+        3. 完成后回主线程建 UI
+        """
+        try:
+            # Step 1：确保可访问的本地文件路径
             if platform == 'android':
-                # Android 11+ Scoped Storage：先复制到私有目录再处理
-                path = self._copy_to_local(path)
-            self.on_image_selected(path)
+                local_path = self._copy_to_local(src_path)
+            else:
+                local_path = src_path
+
+            if not os.path.exists(local_path):
+                Clock.schedule_once(
+                    lambda dt: self.show_dialog("图片文件不存在，请重新选择"), 0
+                )
+                return
+
+            # Step 2：PIL 压缩 + 转换（解决 GPU 纹理超限 & SDL2 格式兼容性）
+            try:
+                from PIL import Image as PILImage
+                pil_img = PILImage.open(local_path)
+                # 修正 EXIF 旋转（手机竖拍图片）
+                try:
+                    from PIL import ImageOps
+                    pil_img = ImageOps.exif_transpose(pil_img)
+                except Exception:
+                    pass
+                # 转为标准 RGB（去除 RGBA/P/CMYK 等 SDL2 不支持的模式）
+                if pil_img.mode != 'RGB':
+                    pil_img = pil_img.convert('RGB')
+                img_w, img_h = pil_img.size
+                # 缩放到最大 1920px（避免超出 GPU 纹理限制，同时保持 OCR 精度）
+                MAX_DIM = 1920
+                if img_w > MAX_DIM or img_h > MAX_DIM:
+                    scale = MAX_DIM / max(img_w, img_h)
+                    img_w = int(img_w * scale)
+                    img_h = int(img_h * scale)
+                    pil_img = pil_img.resize((img_w, img_h), PILImage.LANCZOS)
+                # 覆盖保存为标准 JPEG（Kivy/SDL2 一定能加载）
+                pil_img.save(local_path, 'JPEG', quality=90)
+                pil_img.close()
+            except Exception as e:
+                print(f"[PIL 预处理失败] {e}")
+                img_w, img_h = 0, 0
+
+            # Step 3：回主线程建 UI
+            Clock.schedule_once(
+                lambda dt: self._start_preview(local_path, img_w, img_h), 0
+            )
+        except Exception as e:
+            Clock.schedule_once(
+                lambda dt, msg=str(e): self.show_dialog(f"图片准备失败: {msg}"), 0
+            )
+
+    def _start_preview(self, img_path, img_w, img_h):
+        """主线程：隐藏主界面按钮，延迟一帧后建预览 UI"""
+        self.current_img_path = img_path
+        self.img_width = img_w
+        self.img_height = img_h
+        self.root.ids.btn_container.opacity = 0
+        # 延迟一帧让按钮隐藏完成后再建 UI，避免布局抖动
+        Clock.schedule_once(lambda dt: self._load_preview_layout(img_path), 0.05)
 
     def on_image_selected(self, img_path):
-        """图片选择回调"""
+        """拍照回调（plyer camera，已在主线程）"""
         if not os.path.exists(img_path):
             self.show_dialog("图片文件不存在")
             return
-        
-        self.current_img_path = img_path
-        self.root.ids.btn_container.opacity = 0
-        Clock.schedule_once(lambda x: self._load_preview_layout(img_path), 0.1)
+        # 拍照的图片同样需要预处理，走后台线程
+        threading.Thread(
+            target=self._prepare_image_bg, args=(img_path,), daemon=True
+        ).start()
 
     def _load_preview_layout(self, img_path):
-        """加载预览界面"""
-        self.preview_layout = FloatLayout(size_hint=(1,1))
-        
-        try:
-            from PIL import Image as PILImage
-            pil_img = PILImage.open(img_path)
-            self.img_width, self.img_height = pil_img.size
-        except Exception as e:
-            self.show_dialog(f"图片加载失败: {str(e)}")
-            self.root.ids.btn_container.opacity = 1
-            return
-        
-        # 添加图片控件
+        """主线程：建预览 UI（图片已由 PIL 预处理，尺寸存于 self.img_width/height）"""
+        self.preview_layout = FloatLayout(size_hint=(1, 1))
+
+        # 图片控件（nocache=True 防止 Kivy 复用旧纹理缓存）
         img_widget = Image(
             source=img_path,
             size_hint=(0.9, 0.7),
-            pos_hint={'center_x':0.5, 'center_y':0.6},
+            pos_hint={'center_x': 0.5, 'center_y': 0.58},
             allow_stretch=True,
-            keep_ratio=True
+            keep_ratio=True,
+            nocache=True,
         )
+        # 若 PIL 未能获取尺寸，等 Image 控件纹理加载后再定位标签
+        if self.img_width == 0 or self.img_height == 0:
+            def _on_texture(inst, texture):
+                if texture:
+                    self.img_width, self.img_height = texture.width, texture.height
+                    Clock.schedule_once(lambda dt: self.position_labels(), 0.1)
+            img_widget.bind(texture=_on_texture)
         self.preview_layout.add_widget(img_widget)
 
-        # 初始化可编辑标签
-        self.no_label = EditableLabel(prefix="单号: ", key="no", size_hint=(None,None), size=(200,30), color=(1,0,0,1), font_size=16, bold=True)
-        self.name_label = EditableLabel(prefix="品名: ", key="name", size_hint=(None,None), size=(200,30), color=(1,0,0,1), font_size=16, bold=True)
-        self.qty_label = EditableLabel(prefix="数量: ", key="qty", size_hint=(None,None), size=(200,30), color=(1,0,0,1), font_size=16, bold=True)
-        self.batch_label = EditableLabel(prefix="批次: ", key="batch", size_hint=(None,None), size=(200,30), color=(1,0,0,1), font_size=16, bold=True)
-        self.date_label = EditableLabel(prefix="日期: ", key="date", size_hint=(None,None), size=(200,30), color=(1,0,0,1), font_size=16, bold=True)
-        
-        self.no_label.app = self
-        self.name_label.app = self
-        self.qty_label.app = self
-        self.batch_label.app = self
-        self.date_label.app = self
-        
-        # 添加标签
+        # 可编辑识别结果标签（dp 单位，适配高 DPI 手机屏幕）
+        lbl_size = (dp(220), dp(34))
+        lbl_fs   = sp(15)
+        self.no_label    = EditableLabel(prefix="单号: ",  key="no",    size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
+        self.name_label  = EditableLabel(prefix="品名: ",  key="name",  size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
+        self.qty_label   = EditableLabel(prefix="数量: ",  key="qty",   size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
+        self.batch_label = EditableLabel(prefix="批次: ",  key="batch", size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
+        self.date_label  = EditableLabel(prefix="日期: ",  key="date",  size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
         for lbl in [self.no_label, self.name_label, self.qty_label, self.batch_label, self.date_label]:
+            lbl.app = self
             self.preview_layout.add_widget(lbl)
 
-        # 添加提交/取消按钮
-        btn_box = BoxLayout(size_hint=(0.9, None), height=dp(64), pos_hint={'center_x':0.5, 'y':0.04}, spacing=dp(10))
+        # 提交 / 取消按钮
+        btn_box = BoxLayout(
+            size_hint=(0.92, None), height=dp(64),
+            pos_hint={'center_x': 0.5, 'y': 0.03}, spacing=dp(10)
+        )
         self.submit_btn = MDFillRoundFlatButton(
             text="提交到企微表格",
             size_hint=(0.7, 1),
             md_bg_color="#FF9800",
             font_size=sp(20),
             font_name='Chinese',
-            on_press=self.submit_to_wework_table
+            on_press=self.submit_to_wework_table,
         )
         self.cancel_btn = MDFillRoundFlatButton(
             text="取消",
@@ -531,15 +596,16 @@ class ReceiptApp(MDApp):
             md_bg_color="#F44336",
             font_size=sp(18),
             font_name='Chinese',
-            on_press=self.cancel_operation
+            on_press=self.cancel_operation,
         )
-        
         btn_box.add_widget(self.submit_btn)
         btn_box.add_widget(self.cancel_btn)
         self.preview_layout.add_widget(btn_box)
+
         self.root.add_widget(self.preview_layout)
-        
-        Clock.schedule_once(lambda x: self.ocr_recognize(img_path), 0.5)
+
+        # OCR 在后台线程中执行（已重构，不阻塞主线程）
+        Clock.schedule_once(lambda dt: self.ocr_recognize(img_path), 0.3)
 
     def cancel_operation(self, instance):
         """取消操作"""
