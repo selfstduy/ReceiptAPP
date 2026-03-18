@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:   # 支持在 GitHub 网页手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,11 +18,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git zip unzip openjdk-17-jdk \
-            autoconf libtool pkg-config \
+            git zip unzip \
+            openjdk-17-jdk \
+            ant \
+            build-essential \
+            autoconf automake libtool \
+            pkg-config \
             zlib1g-dev libncurses-dev \
-            libffi-dev libssl-dev cmake \
-            python3-pip python3-venv
+            libffi-dev libssl-dev \
+            libltdl-dev \
+            cmake \
+            python3-pip python3-venv python3-setuptools
 
       - name: 缓存 buildozer 全局目录（SDK/NDK 等）
         uses: actions/cache@v4
@@ -32,16 +38,28 @@ jobs:
           restore-keys: |
             buildozer-${{ runner.os }}-
 
+      - name: 预先接受所有 Android SDK 许可协议（含预览版）
+        run: |
+          mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
+          # 正式版 SDK 许可
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4408b1c4ae2113f8e3a5596b642b\nd56f5187479451eabf01fb78af6dfcb131a6481e" \
+            > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+          # 预览版许可（RC/preview build-tools 需要这个）
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910" \
+            > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
+          # Intel 扩展许可
+          printf "\n33b6937101b8927399a26b55d96baa156b6de15f" \
+            > ~/.buildozer/android/platform/android-sdk/licenses/intel-android-extra-license
+
       - name: 安装 Python 构建工具
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install --user setuptools cython buildozer
-          # 确认安装成功
-          python3 -m buildozer --version
+          python3 -m pip install setuptools cython==0.29.36 buildozer
+          buildozer --version
 
       - name: 构建 APK（debug）
         run: |
-          python3 -m buildozer -v android debug
+          buildozer -v android debug 2>&1
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4

@@ -14,7 +14,6 @@ android.permissions = CAMERA,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,INTERN
 
 android.api = 33
 android.ndk = 25b
-android.sdk = 33
 android.enable_androidx = True
 android.archs = arm64-v8a
 
