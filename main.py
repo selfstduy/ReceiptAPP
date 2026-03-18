@@ -29,31 +29,55 @@ Config.set('kivy', 'log_level', 'error')  # 减少日志输出
 # ====================== 强制中文字体配置（确保弹窗中文显示） ======================
 from kivy.core.text import LabelBase
 def register_chinese_fonts():
-    """注册中文字体，兼容Windows/Android"""
-    font_paths = []
+    """注册中文字体，兼容 Windows / Android（含 vivo、OPPO、小米等各厂商路径）"""
+    import glob as _glob
+
     if platform == 'win':
-        font_paths = [
-            'C:/Windows/Fonts/msyh.ttc',      # 微软雅黑
-            'C:/Windows/Fonts/simhei.ttf',    # 黑体
-            'C:/Windows/Fonts/simsun.ttc',    # 宋体
+        candidates = [
+            'C:/Windows/Fonts/msyh.ttc',
+            'C:/Windows/Fonts/simhei.ttf',
+            'C:/Windows/Fonts/simsun.ttc',
         ]
     elif platform == 'android':
-        font_paths = [
-            '/system/fonts/DroidSansFallback.ttf',
+        # 常见固定路径（覆盖 Android 5–14 及主流厂商）
+        candidates = [
             '/system/fonts/NotoSansCJK-Regular.ttc',
+            '/system/fonts/NotoSansCJKsc-Regular.otf',
+            '/system/fonts/NotoSansSC-Regular.otf',
+            '/system/fonts/NotoSerifCJK-Regular.ttc',
+            '/system/fonts/DroidSansFallback.ttf',
+            '/system/fonts/DroidSansFallbackFull.ttf',
             '/system/fonts/SourceHanSansCN-Regular.otf',
+            '/system/fonts/MTLmr3m.ttf',
         ]
+        # 通配符兜底：扫描系统字体目录里含 CJK/SC/CN/Chinese 的文件
+        for pattern in [
+            '/system/fonts/*CJK*.ttc',
+            '/system/fonts/*CJK*.otf',
+            '/system/fonts/*SC*.otf',
+            '/system/fonts/*CN*.ttf',
+            '/system/fonts/*chinese*.ttf',
+            '/system/fonts/*Chinese*.ttf',
+        ]:
+            candidates += _glob.glob(pattern)
     else:
-        font_paths = ['Roboto']
-    
-    for font_path in font_paths:
+        candidates = []
+
+    for font_path in candidates:
         if os.path.exists(font_path):
-            LabelBase.register(name='Chinese', fn_regular=font_path)
-            Config.set('kivy', 'default_font', ['Chinese', font_path])
-            print(f"成功加载中文字体: {font_path}")
-            return
+            try:
+                LabelBase.register(name='Chinese', fn_regular=font_path)
+                Config.set('kivy', 'default_font', ['Chinese', font_path])
+                print(f"成功加载中文字体: {font_path}")
+                return
+            except Exception as e:
+                print(f"字体加载失败({font_path}): {e}")
+                continue
+
+    # 全部失败时 fallback（乱码但不崩溃）
     LabelBase.register(name='Chinese', fn_regular='Roboto')
     Config.set('kivy', 'default_font', ['Chinese', 'Roboto'])
+    print("警告: 未找到中文字体，使用 Roboto 替代（中文可能显示为方框）")
 
 register_chinese_fonts()
 
@@ -175,12 +199,16 @@ FloatLayout:
             pos: self.pos
             size: self.size
 
-    # 右上角设置按钮
-    MDIconButton:
-        icon: "settings"
-        pos_hint: {"right": 0.95, "top": 0.98}
+    # 右上角设置按钮（用原生 Button 避免 MDIconButton 图标字体加载失败）
+    Button:
+        text: "\\u2699"
+        font_size: 28
+        pos_hint: {"right": 0.98, "top": 0.99}
         size_hint: None, None
-        size: (50, 50)
+        size: (54, 54)
+        background_normal: ""
+        background_color: (0, 0, 0, 0)
+        color: (0.25, 0.25, 0.25, 1)
         on_press: app.open_settings_dialog()
     
     # 按钮容器
