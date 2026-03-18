@@ -7,8 +7,8 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,ttc,json
 source.include_patterns = config/**
 version = 0.1
 
-# 竖屏
-android.orientation = portrait
+# 竖屏（buildozer 正确 key 名为 orientation，不是 android.orientation）
+orientation = portrait
 
 android.permissions = CAMERA,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,INTERNET,ACCESS_MEDIA_LOCATION
 
