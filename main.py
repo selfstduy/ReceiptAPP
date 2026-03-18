@@ -19,6 +19,7 @@ from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.textfield import MDTextField
 from kivy.core.window import Window
 from kivy.utils import platform
+from kivy.metrics import dp, sp
 from kivy.config import Config
 from kivy.app import App
 # 导入Kivy原生基础弹窗（核心）
@@ -203,10 +204,10 @@ FloatLayout:
     Button:
         text: "设置"
         font_name: 'Chinese'
-        font_size: 16
+        font_size: sp(18)
         pos_hint: {"right": 0.99, "top": 0.99}
         size_hint: None, None
-        size: (72, 44)
+        size: dp(80), dp(48)
         background_normal: ""
         background_color: (0.2, 0.2, 0.2, 0.7)
         color: (1, 1, 1, 1)
@@ -216,35 +217,36 @@ FloatLayout:
     MDBoxLayout:
         id: btn_container
         orientation: 'horizontal'
-        size_hint: 1, 0.15
-        pos_hint: {'center_x': 0.5, 'y': 0.1}
-        spacing: 20
-        padding: [20, 0, 20, 0]
+        size_hint: 1, None
+        height: dp(72)
+        pos_hint: {'center_x': 0.5, 'y': 0.04}
+        spacing: dp(16)
+        padding: [dp(20), 0, dp(20), 0]
         
         MDFillRoundFlatButton:
             text: "拍照"
             size_hint_y: None
-            height: 60
+            height: dp(72)
             md_bg_color: "#4CAF50"
-            font_size: 20
+            font_size: sp(22)
             font_name: 'Chinese'
             on_press: app.take_photo()
         
         MDFillRoundFlatButton:
             text: "选择照片"
             size_hint_y: None
-            height: 60
+            height: dp(72)
             md_bg_color: "#2196F3"
-            font_size: 20
+            font_size: sp(22)
             font_name: 'Chinese'
             on_press: app.choose_image()
         
         MDFillRoundFlatButton:
             text: "退出"
             size_hint_y: None
-            height: 60
+            height: dp(72)
             md_bg_color: "#F44336"
-            font_size: 20
+            font_size: sp(22)
             font_name: 'Chinese'
             on_press: app.exit_app()
 '''
@@ -495,20 +497,20 @@ class ReceiptApp(MDApp):
             self.preview_layout.add_widget(lbl)
 
         # 添加提交/取消按钮
-        btn_box = BoxLayout(size_hint=(0.8, None), height=60, pos_hint={'center_x':0.5, 'y':0.1}, spacing=10)
+        btn_box = BoxLayout(size_hint=(0.9, None), height=dp(64), pos_hint={'center_x':0.5, 'y':0.04}, spacing=dp(10))
         self.submit_btn = MDFillRoundFlatButton(
             text="提交到企微表格",
             size_hint=(0.7, 1),
-            md_bg_color="#FF9800", 
-            font_size=20,
+            md_bg_color="#FF9800",
+            font_size=sp(20),
             font_name='Chinese',
             on_press=self.submit_to_wework_table
         )
         self.cancel_btn = MDFillRoundFlatButton(
             text="取消",
             size_hint=(0.3, 1),
-            md_bg_color="#F44336", 
-            font_size=16,
+            md_bg_color="#F44336",
+            font_size=sp(18),
             font_name='Chinese',
             on_press=self.cancel_operation
         )
@@ -895,24 +897,25 @@ class ReceiptApp(MDApp):
         :param msg: 要显示的中文信息
         """
         # 1. 创建弹窗内容布局（仅包含标签+关闭按钮）
-        content_layout = BoxLayout(orientation='vertical', spacing=10, padding=20)
+        content_layout = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
         
         # 2. 创建显示中文的标签（指定中文字体）
         msg_label = Label(
             text=msg,
-            font_name='Chinese',  # 确保用已注册的中文字体
-            font_size=18,
+            font_name='Chinese',
+            font_size=sp(22),
             halign='center',
             valign='middle'
         )
-        
+        msg_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+
         # 3. 创建关闭按钮（指定中文字体）
         close_btn = MDFillRoundFlatButton(
             text="确定",
             font_name='Chinese',
-            font_size=16,
+            font_size=sp(20),
             size_hint=(1, None),
-            height=40
+            height=dp(52)
         )
         
         # 4. 添加控件到布局
@@ -921,10 +924,12 @@ class ReceiptApp(MDApp):
         
         # 5. 创建原生基础弹窗
         self.popup = Popup(
-            title="提示",          # 弹窗标题（中文）
+            title="提示",
+            title_font='Chinese',
+            title_size=sp(20),
             content=content_layout,
-            size_hint=(0.8, 0.4),  # 弹窗尺寸（相对屏幕）
-            auto_dismiss=False     # 禁止点击外部关闭，必须点按钮
+            size_hint=(0.85, 0.42),
+            auto_dismiss=False
         )
         
         # 6. 绑定按钮关闭弹窗
@@ -944,9 +949,9 @@ class ReceiptApp(MDApp):
                 return Label(
                     text=text,
                     font_name='Chinese',
-                    font_size=18,
+                    font_size=sp(18),
                     size_hint_y=None,
-                    height=36,
+                    height=dp(38),
                     color=(0.15, 0.15, 0.15, 1),
                     halign='left',
                     valign='middle',
@@ -954,16 +959,16 @@ class ReceiptApp(MDApp):
                 )
 
             # ---- 输入框 ----
-            def make_input(hint, text='', multiline=False, height=58):
+            def make_input(hint, text='', multiline=False, height=None):
                 return TextInput(
                     hint_text=hint,
                     text=text,
                     font_name='Chinese',
-                    font_size=18,
+                    font_size=sp(17),
                     multiline=multiline,
                     size_hint_y=None,
-                    height=height,
-                    padding=[12, 10, 12, 10],
+                    height=height if height is not None else dp(58),
+                    padding=[dp(12), dp(10), dp(12), dp(10)],
                     background_color=(0.97, 0.97, 0.97, 1),
                     foreground_color=(0, 0, 0, 1),
                     cursor_color=(0.2, 0.5, 1, 1),
@@ -976,7 +981,7 @@ class ReceiptApp(MDApp):
                 '字段映射 JSON',
                 json.dumps(WEWORK_CONFIG.get('field_mapping', {}), ensure_ascii=False, indent=2),
                 multiline=True,
-                height=160,
+                height=dp(160),
             )
 
             # ---- 按钮 ----
@@ -984,7 +989,7 @@ class ReceiptApp(MDApp):
                 return Button(
                     text=text,
                     font_name='Chinese',
-                    font_size=20,
+                    font_size=sp(20),
                     bold=True,
                     background_normal='',
                     background_color=bg,
@@ -995,7 +1000,7 @@ class ReceiptApp(MDApp):
             save_btn   = make_btn('保存', (0.18, 0.65, 0.18, 1))
             cancel_btn = make_btn('取消', (0.85, 0.18, 0.18, 1))
 
-            btn_row = BoxLayout(orientation='horizontal', size_hint_y=None, height=64, spacing=16)
+            btn_row = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(64), spacing=dp(16))
             btn_row.add_widget(save_btn)
             btn_row.add_widget(cancel_btn)
 
@@ -1003,16 +1008,16 @@ class ReceiptApp(MDApp):
             title_lbl = Label(
                 text='系统配置',
                 font_name='Chinese',
-                font_size=24,
+                font_size=sp(24),
                 bold=True,
                 size_hint_y=None,
-                height=52,
+                height=dp(56),
                 color=(0.1, 0.1, 0.1, 1),
             )
 
             # ---- 分隔线（用 BoxLayout 模拟） ----
             def divider():
-                b = BoxLayout(size_hint_y=None, height=2)
+                b = BoxLayout(size_hint_y=None, height=dp(2))
                 b.canvas.before.add(__import__('kivy.graphics', fromlist=['Color']).Color(0.8, 0.8, 0.8, 1))
                 b.canvas.before.add(__import__('kivy.graphics', fromlist=['Rectangle']).Rectangle(pos=b.pos, size=b.size))
                 return b
@@ -1020,8 +1025,8 @@ class ReceiptApp(MDApp):
             # ---- 整体内容 ----
             inner = BoxLayout(
                 orientation='vertical',
-                spacing=10,
-                padding=[18, 12, 18, 18],
+                spacing=dp(10),
+                padding=[dp(18), dp(12), dp(18), dp(18)],
                 size_hint_y=None,
             )
             items = [
@@ -1030,7 +1035,7 @@ class ReceiptApp(MDApp):
                 make_label('OCR Secret Key'),  self._set_ocr_key,
                 make_label('企微 Webhook URL'), self._set_webhook,
                 make_label('字段映射（JSON）'),  self._set_mapping,
-                BoxLayout(size_hint_y=None, height=10),  # 间距
+                BoxLayout(size_hint_y=None, height=dp(10)),  # 间距
                 btn_row,
             ]
             for w in items:
