@@ -26,6 +26,7 @@ from kivy.config import Config
 from kivy.app import App
 # 导入Kivy原生基础弹窗（核心）
 from kivy.uix.popup import Popup
+from kivy.graphics import Color, Rectangle
 import sys
 Config.set('kivy', 'log_level', 'error')  # 减少日志输出
 
@@ -269,7 +270,8 @@ class EditableLabel(Label):
 
     def update_content(self, new_content):
         self.content = new_content.strip()
-        self.text = f"{self.prefix}{self.content}" if self.content else ""
+        # 始终显示前缀，让标签在 OCR 前也占据可见空间
+        self.text = f"{self.prefix}{self.content}"
 
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos) and not self.edit_input and self.content:
@@ -287,15 +289,21 @@ class EditableLabel(Label):
             size_hint=(None, None),
             font_size=self.font_size,
             font_name='Chinese',
-            foreground_color=(1, 0, 0, 1),
-            background_color=(1, 1, 1, 0.5),
+            foreground_color=(0.1, 0.15, 0.3, 1),
+            background_color=(1, 1, 0.85, 1),
             cursor_color=(0, 0, 0, 1),
             multiline=False,
             halign=self.halign,
         )
         self.edit_input.bind(on_text_validate=self._save_edit)
         self.edit_input.bind(on_touch_down=self._check_focus_loss)
-        self.parent.add_widget(self.edit_input)
+        # 添加到 preview_layout (FloatLayout) 以支持绝对定位，而非 BoxLayout 父容器
+        container = (
+            self.app.preview_layout
+            if (self.app and getattr(self.app, 'preview_layout', None))
+            else self.parent
+        )
+        container.add_widget(self.edit_input)
         self.edit_input.focus = True
         self.opacity = 0
 
@@ -307,7 +315,12 @@ class EditableLabel(Label):
             self.update_content(new_content)
             if self.app:
                 self.app.ocr_result[self.key]["text"] = new_content
-        self.parent.remove_widget(self.edit_input)
+        container = (
+            self.app.preview_layout
+            if (self.app and getattr(self.app, 'preview_layout', None))
+            else self.parent
+        )
+        container.remove_widget(self.edit_input)
         self.edit_input = None
         self.opacity = 1
 
@@ -728,45 +741,90 @@ class ReceiptApp(MDApp):
         主线程：建预览 UI
         display_path - PIL 处理后的图片，供 Kivy Image 显示
         ocr_path     - 原始图片，供腾讯 OCR API 使用（若为 None 则与 display_path 相同）
+
+        布局结构（从上到下）：
+          ① 图片区（52%）
+          ② 识别结果卡片列表（36%）—— 竖向对齐，行间有间隙
+          ③ 提交/取消按钮区（12%）
         """
         if ocr_path is None:
             ocr_path = display_path
         self.preview_layout = FloatLayout(size_hint=(1, 1))
 
-        # 图片控件（nocache=True 防止 Kivy 复用旧纹理缓存）
+        # 全屏竖向主容器
+        main_box = BoxLayout(orientation='vertical', size_hint=(1, 1))
+
+        # ① 图片区（占上方 52%）
         img_widget = Image(
             source=display_path,
-            size_hint=(0.9, 0.7),
-            pos_hint={'center_x': 0.5, 'center_y': 0.58},
+            size_hint=(1, 0.52),
             allow_stretch=True,
             keep_ratio=True,
             nocache=True,
         )
-        # 若 PIL 未能获取尺寸，等 Image 控件纹理加载后再定位标签
         if self.img_width == 0 or self.img_height == 0:
             def _on_texture(inst, texture):
                 if texture:
                     self.img_width, self.img_height = texture.width, texture.height
-                    Clock.schedule_once(lambda dt: self.position_labels(), 0.1)
             img_widget.bind(texture=_on_texture)
-        self.preview_layout.add_widget(img_widget)
+        main_box.add_widget(img_widget)
 
-        # 可编辑识别结果标签（dp 单位，适配高 DPI 手机屏幕）
-        lbl_size = (dp(220), dp(34))
-        lbl_fs   = sp(15)
-        self.no_label    = EditableLabel(prefix="单号: ",  key="no",    size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
-        self.name_label  = EditableLabel(prefix="品名: ",  key="name",  size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
-        self.qty_label   = EditableLabel(prefix="数量: ",  key="qty",   size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
-        self.batch_label = EditableLabel(prefix="批次: ",  key="batch", size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
-        self.date_label  = EditableLabel(prefix="日期: ",  key="date",  size_hint=(None,None), size=lbl_size, color=(1,0,0,1), font_size=lbl_fs, bold=True)
-        for lbl in [self.no_label, self.name_label, self.qty_label, self.batch_label, self.date_label]:
+        # ② 识别结果面板（占中间 36%），浅灰色背景
+        result_box = BoxLayout(
+            orientation='vertical',
+            size_hint=(1, 0.36),
+            padding=[dp(12), dp(8), dp(12), dp(8)],
+            spacing=dp(6),
+        )
+        with result_box.canvas.before:
+            Color(0.93, 0.93, 0.93, 1)
+            panel_bg = Rectangle(pos=result_box.pos, size=result_box.size)
+        result_box.bind(
+            pos=lambda w, v, r=panel_bg: setattr(r, 'pos', v),
+            size=lambda w, v, r=panel_bg: setattr(r, 'size', v),
+        )
+
+        lbl_fs = sp(17)
+        row_h  = dp(42)
+        # 按显示顺序：单号、日期、品名、数量、批次
+        label_configs = [
+            ("单号: ", "no"),
+            ("日期: ", "date"),
+            ("品名: ", "name"),
+            ("数量: ", "qty"),
+            ("批次: ", "batch"),
+        ]
+        for prefix, key in label_configs:
+            lbl = EditableLabel(
+                prefix=prefix, key=key,
+                size_hint=(1, None), height=row_h,
+                color=(0.1, 0.15, 0.35, 1),
+                font_size=lbl_fs,
+                halign='left', valign='middle',
+                bold=True,
+            )
             lbl.app = self
-            self.preview_layout.add_widget(lbl)
+            # 让 halign='left' 生效：将 text_size 宽度绑定到控件宽度
+            lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(8), val[1])))
+            # 白色卡片背景
+            with lbl.canvas.before:
+                Color(1, 1, 1, 0.95)
+                lbl_bg = Rectangle(pos=lbl.pos, size=lbl.size)
+            lbl.bind(
+                pos=lambda w, v, r=lbl_bg: setattr(r, 'pos', v),
+                size=lambda w, v, r=lbl_bg: setattr(r, 'size', v),
+            )
+            setattr(self, f"{key}_label", lbl)
+            result_box.add_widget(lbl)
 
-        # 提交 / 取消按钮
-        btn_box = BoxLayout(
-            size_hint=(0.92, None), height=dp(64),
-            pos_hint={'center_x': 0.5, 'y': 0.03}, spacing=dp(10)
+        main_box.add_widget(result_box)
+
+        # ③ 按钮区（下方 12%）
+        btn_area = BoxLayout(
+            orientation='horizontal',
+            size_hint=(1, 0.12),
+            padding=[dp(20), dp(8), dp(20), dp(8)],
+            spacing=dp(10),
         )
         self.submit_btn = MDFillRoundFlatButton(
             text="提交到企微表格",
@@ -784,10 +842,11 @@ class ReceiptApp(MDApp):
             font_name='Chinese',
             on_press=self.cancel_operation,
         )
-        btn_box.add_widget(self.submit_btn)
-        btn_box.add_widget(self.cancel_btn)
-        self.preview_layout.add_widget(btn_box)
+        btn_area.add_widget(self.submit_btn)
+        btn_area.add_widget(self.cancel_btn)
+        main_box.add_widget(btn_area)
 
+        self.preview_layout.add_widget(main_box)
         self.root.add_widget(self.preview_layout)
 
         # OCR 使用原始图片路径（非 PIL 处理版），避免二次编码影响识别
@@ -1023,8 +1082,6 @@ class ReceiptApp(MDApp):
                 def _apply(dt):
                     self.ocr_result = result
                     self._update_editable_labels()
-                    # 等图片控件完成布局后再定位标签
-                    Clock.schedule_once(lambda dt2: self.position_labels(), 0.2)
                 Clock.schedule_once(_apply, 0)
 
             except TencentCloudSDKException as err:
