@@ -416,19 +416,21 @@ class ReceiptApp(MDApp):
         from android import mActivity
         from android.activity import bind as activity_bind
 
-        Intent        = autoclass('android.content.Intent')
-        MediaStore    = autoclass('android.provider.MediaStore')
-        ContentValues = autoclass('android.content.ContentValues')
-        Context       = autoclass('android.content.Context')
+        # jnius 中 Java 内部类必须用 $ 分隔符单独加载，不能用 . 属性访问
+        Intent             = autoclass('android.content.Intent')
+        MediaStore         = autoclass('android.provider.MediaStore')
+        MediaStoreImgMedia = autoclass('android.provider.MediaStore$Images$Media')
+        ContentValues      = autoclass('android.content.ContentValues')
+        Context            = autoclass('android.content.Context')
 
         context = cast(Context, mActivity.getApplicationContext())
 
         # 在 MediaStore 中创建一条待写入的图片记录，得到 content:// URI
         values = ContentValues()
-        values.put(MediaStore.Images.Media.DISPLAY_NAME, 'receipt_temp.jpg')
-        values.put(MediaStore.Images.Media.MIME_TYPE, 'image/jpeg')
+        values.put(MediaStoreImgMedia.DISPLAY_NAME, 'receipt_temp.jpg')
+        values.put(MediaStoreImgMedia.MIME_TYPE, 'image/jpeg')
         self._camera_output_uri = context.getContentResolver().insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+            MediaStoreImgMedia.EXTERNAL_CONTENT_URI, values
         )
         if self._camera_output_uri is None:
             raise RuntimeError("无法创建 MediaStore 图片 URI，请检查存储权限")
