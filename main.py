@@ -425,12 +425,14 @@ class ReceiptApp(MDApp):
 
         context = cast(Context, mActivity.getApplicationContext())
 
+        # 用毫秒时间戳生成唯一文件名，避免重复插入同名记录触发 SQLite UNIQUE 约束错误
+        import time as _time
+        unique_name = 'receipt_{}.jpg'.format(int(_time.time() * 1000))
+
         # 在 MediaStore 中插入一条待写入的图片记录，取得 content:// URI
-        # 列名直接用字符串常量，规避 jnius 通过接口/父类取静态字段时类型不稳定的 bug：
-        #   MediaStore.MediaColumns.DISPLAY_NAME = "_display_name"
-        #   MediaStore.MediaColumns.MIME_TYPE    = "mime_type"
+        # 列名直接用字符串字面量，规避 jnius 经接口/父类取静态字段类型不稳定的问题
         values = ContentValues()
-        values.put('_display_name', 'receipt_temp.jpg')
+        values.put('_display_name', unique_name)
         values.put('mime_type', 'image/jpeg')
         self._camera_output_uri = context.getContentResolver().insert(
             ImgMedia.EXTERNAL_CONTENT_URI, values
@@ -440,14 +442,16 @@ class ReceiptApp(MDApp):
 
         # 启动系统相机，指定输出到 content:// URI（避免 FileUriExposedException）
         intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        # 显式 cast 为 Parcelable，帮助 jnius 解析正确的 putExtra(String, Parcelable) 重载
-        # 否则 jnius 可能错误匹配 putExtra(String, String) 并报类型错误
+        # 显式 cast 为 Parcelable，帮助 jnius 解析 putExtra(String, Parcelable) 重载
         intent.putExtra(
             MediaStore.EXTRA_OUTPUT,
             cast('android.os.Parcelable', self._camera_output_uri)
         )
 
         REQUEST_CAMERA = 0x2001
+        # 保存 context 引用供结果回调使用
+        _context = context
+        _uri = self._camera_output_uri
 
         def on_result(request_code, result_code, data):
             if request_code != REQUEST_CAMERA:
@@ -457,14 +461,21 @@ class ReceiptApp(MDApp):
 
             RESULT_OK = -1  # android.app.Activity.RESULT_OK
             if result_code == RESULT_OK:
-                # 用 content:// URI 字符串走后台图片处理流程
-                uri_str = self._camera_output_uri.toString()
+                uri_str = _uri.toString()
+                # 后台处理图片；处理完成后由 _prepare_image_bg 自行清理 MediaStore 记录
+                self._camera_mediastore_uri  = _uri
+                self._camera_mediastore_ctx  = _context
                 threading.Thread(
                     target=self._prepare_image_bg,
                     args=(uri_str,),
                     daemon=True
                 ).start()
-            # 用户取消：不做任何处理，界面保持主页状态
+            else:
+                # 用户取消拍照：删除刚才创建的空 MediaStore 记录，避免残留
+                try:
+                    _context.getContentResolver().delete(_uri, None, None)
+                except Exception:
+                    pass
 
         activity_bind(on_activity_result=on_result)
         mActivity.startActivityForResult(intent, REQUEST_CAMERA)
@@ -669,6 +680,19 @@ class ReceiptApp(MDApp):
                     lambda dt: self.show_dialog("图片文件不存在，请重新选择"), 0
                 )
                 return
+
+            # 拍照流程：图片已复制到私有目录，删除 MediaStore 中的临时记录
+            # 避免相册中积累无用的临时照片，且消除下次 insert 的 UNIQUE 冲突风险
+            if platform == 'android':
+                try:
+                    ms_uri = getattr(self, '_camera_mediastore_uri', None)
+                    ms_ctx = getattr(self, '_camera_mediastore_ctx', None)
+                    if ms_uri is not None and ms_ctx is not None:
+                        ms_ctx.getContentResolver().delete(ms_uri, None, None)
+                        self._camera_mediastore_uri = None
+                        self._camera_mediastore_ctx = None
+                except Exception as del_e:
+                    print(f"[MediaStore 清理失败] {del_e}")
 
             Clock.schedule_once(
                 lambda dt: self._start_preview(display_path, ocr_path, img_w, img_h), 0
