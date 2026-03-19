@@ -416,26 +416,29 @@ class ReceiptApp(MDApp):
         from android import mActivity
         from android.activity import bind as activity_bind
 
-        # jnius 中 Java 内部类必须用 $ 分隔符单独加载，不能用 . 属性访问
-        Intent             = autoclass('android.content.Intent')
-        MediaStore         = autoclass('android.provider.MediaStore')
-        MediaStoreImgMedia = autoclass('android.provider.MediaStore$Images$Media')
-        ContentValues      = autoclass('android.content.ContentValues')
-        Context            = autoclass('android.content.Context')
+        # jnius 中内部类/父类继承的静态字段需从声明该字段的类加载
+        Intent        = autoclass('android.content.Intent')
+        MediaStore    = autoclass('android.provider.MediaStore')
+        # EXTERNAL_CONTENT_URI 定义在 Images$Media，其余列名定义在 MediaColumns
+        ImgMedia      = autoclass('android.provider.MediaStore$Images$Media')
+        MediaColumns  = autoclass('android.provider.MediaStore$MediaColumns')
+        ContentValues = autoclass('android.content.ContentValues')
+        Context       = autoclass('android.content.Context')
 
         context = cast(Context, mActivity.getApplicationContext())
 
-        # 在 MediaStore 中创建一条待写入的图片记录，得到 content:// URI
+        # 在 MediaStore 中插入一条待写入的图片记录，取得 content:// URI
+        # 列名从 MediaColumns 获取，避免 jnius 通过子类继承获取返回 null 的问题
         values = ContentValues()
-        values.put(MediaStoreImgMedia.DISPLAY_NAME, 'receipt_temp.jpg')
-        values.put(MediaStoreImgMedia.MIME_TYPE, 'image/jpeg')
+        values.put(MediaColumns.DISPLAY_NAME, 'receipt_temp.jpg')
+        values.put(MediaColumns.MIME_TYPE, 'image/jpeg')
         self._camera_output_uri = context.getContentResolver().insert(
-            MediaStoreImgMedia.EXTERNAL_CONTENT_URI, values
+            ImgMedia.EXTERNAL_CONTENT_URI, values
         )
         if self._camera_output_uri is None:
             raise RuntimeError("无法创建 MediaStore 图片 URI，请检查存储权限")
 
-        # 启动系统相机，指定输出到 content:// URI（不用 file://，不会抛异常）
+        # 启动系统相机，指定输出到 content:// URI（避免 FileUriExposedException）
         intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
         intent.putExtra(MediaStore.EXTRA_OUTPUT, self._camera_output_uri)
 
