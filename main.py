@@ -384,22 +384,80 @@ class ReceiptApp(MDApp):
 
     def take_photo(self):
         """拍照功能"""
-        if platform == 'android' and not check_permission(Permission.CAMERA):
-            self.show_dialog("请先授予相机权限")
-            self._request_permissions_safe()
-            return
-        
-        self.current_img_path = self.get_safe_image_path()
-        
-        try:
-            from plyer import camera
-            # plyer 内部已处理 Android FileProvider，无需手动配置
-            Clock.schedule_once(lambda x: camera.take_picture(
-                filename=self.current_img_path,
-                on_complete=self.on_image_selected
-            ), 0.1)
-        except Exception as e:
-            self.show_dialog(f"相机调用失败: {str(e)}")
+        if platform == 'android':
+            if not check_permission(Permission.CAMERA):
+                self.show_dialog("请先授予相机权限")
+                self._request_permissions_safe()
+                return
+            try:
+                self._android_take_photo()
+            except Exception as e:
+                self.show_dialog(f"相机调用失败: {str(e)}")
+        else:
+            # PC 端用 plyer
+            self.current_img_path = self.get_safe_image_path()
+            try:
+                from plyer import camera
+                Clock.schedule_once(lambda x: camera.take_picture(
+                    filename=self.current_img_path,
+                    on_complete=self.on_image_selected
+                ), 0.1)
+            except Exception as e:
+                self.show_dialog(f"相机调用失败: {str(e)}")
+
+    def _android_take_photo(self):
+        """
+        Android 拍照实现（规避 FileUriExposedException）：
+        用 MediaStore 创建 content:// URI 作为相机输出目标，
+        通过 startActivityForResult + on_activity_result 获取结果，
+        无需 FileProvider XML 配置。
+        """
+        from jnius import autoclass, cast
+        from android import mActivity
+        from android.activity import bind as activity_bind
+
+        Intent        = autoclass('android.content.Intent')
+        MediaStore    = autoclass('android.provider.MediaStore')
+        ContentValues = autoclass('android.content.ContentValues')
+        Context       = autoclass('android.content.Context')
+
+        context = cast(Context, mActivity.getApplicationContext())
+
+        # 在 MediaStore 中创建一条待写入的图片记录，得到 content:// URI
+        values = ContentValues()
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, 'receipt_temp.jpg')
+        values.put(MediaStore.Images.Media.MIME_TYPE, 'image/jpeg')
+        self._camera_output_uri = context.getContentResolver().insert(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+        )
+        if self._camera_output_uri is None:
+            raise RuntimeError("无法创建 MediaStore 图片 URI，请检查存储权限")
+
+        # 启动系统相机，指定输出到 content:// URI（不用 file://，不会抛异常）
+        intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, self._camera_output_uri)
+
+        REQUEST_CAMERA = 0x2001
+
+        def on_result(request_code, result_code, data):
+            if request_code != REQUEST_CAMERA:
+                return
+            from android.activity import unbind as activity_unbind
+            activity_unbind(on_activity_result=on_result)
+
+            RESULT_OK = -1  # android.app.Activity.RESULT_OK
+            if result_code == RESULT_OK:
+                # 用 content:// URI 字符串走后台图片处理流程
+                uri_str = self._camera_output_uri.toString()
+                threading.Thread(
+                    target=self._prepare_image_bg,
+                    args=(uri_str,),
+                    daemon=True
+                ).start()
+            # 用户取消：不做任何处理，界面保持主页状态
+
+        activity_bind(on_activity_result=on_result)
+        mActivity.startActivityForResult(intent, REQUEST_CAMERA)
 
     def choose_image(self):
         """选择照片功能"""
