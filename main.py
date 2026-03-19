@@ -391,29 +391,9 @@ class ReceiptApp(MDApp):
         
         self.current_img_path = self.get_safe_image_path()
         
-        if platform == 'android':
-            try:
-                from jnius import autoclass, cast
-                from android import mActivity
-                _File        = autoclass('java.io.File')
-                _FileProvider = autoclass('androidx.core.content.FileProvider')
-                _Context     = autoclass('android.content.Context')
-                _Intent      = autoclass('android.content.Intent')
-                file = _File(self.current_img_path)
-                context = cast(_Context, mActivity.getApplicationContext())
-                authority = context.getPackageName() + ".fileprovider"
-                content_uri = _FileProvider.getUriForFile(context, authority, file)
-                context.grantUriPermission(
-                    context.getPackageName(),
-                    content_uri,
-                    _Intent.FLAG_GRANT_READ_URI_PERMISSION | _Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            except Exception as e:
-                self.show_dialog(f"相机配置错误: {str(e)}")
-                return
-        
         try:
             from plyer import camera
+            # plyer 内部已处理 Android FileProvider，无需手动配置
             Clock.schedule_once(lambda x: camera.take_picture(
                 filename=self.current_img_path,
                 on_complete=self.on_image_selected
@@ -472,72 +452,174 @@ class ReceiptApp(MDApp):
             target=self._prepare_image_bg, args=(src_path,), daemon=True
         ).start()
 
+    def _get_display_image_path(self):
+        """获取用于 Kivy 显示的独立图片路径（与 OCR 路径分开）"""
+        ocr_path = self.get_safe_image_path()
+        return ocr_path.replace('receipt_ocr.jpg', 'receipt_display.jpg')
+
+    # ------------------------------------------------------------------
+    # Android 原生图片处理（BitmapFactory + ContentResolver）
+    # 支持 content URI、HEIC、AVIF、WebP 等 PIL 无法处理的情况
+    # ------------------------------------------------------------------
+    def _android_process_image(self, src_path, ocr_path, display_path, max_dim=1920):
+        """
+        Android 专用：用 Java BitmapFactory / ContentResolver 读取任意格式图片，
+        输出：
+          ocr_path     - 原始画质 JPEG（供腾讯 OCR API）
+          display_path - 缩放至 max_dim 的 JPEG（供 Kivy Image 显示）
+        返回 (img_w, img_h) 为 display 图片的实际尺寸
+        """
+        from jnius import autoclass, cast
+        from android import mActivity
+
+        Context        = autoclass('android.content.Context')
+        Uri            = autoclass('android.net.Uri')
+        BitmapFactory  = autoclass('android.graphics.BitmapFactory')
+        BitmapOpts     = autoclass('android.graphics.BitmapFactory$Options')
+        CompressFormat = autoclass('android.graphics.Bitmap$CompressFormat')
+        FileOutputStream = autoclass('java.io.FileOutputStream')
+
+        context = cast(Context, mActivity.getApplicationContext())
+        is_content_uri = src_path.startswith('content://')
+
+        def open_stream():
+            if is_content_uri:
+                return context.getContentResolver().openInputStream(
+                    Uri.parse(src_path)
+                )
+            return None  # 普通文件路径用 decodeFile
+
+        # ---- Step 1: 获取原始尺寸（不加载像素）----
+        opts_bounds = BitmapOpts()
+        opts_bounds.inJustDecodeBounds = True
+        if is_content_uri:
+            s = open_stream()
+            BitmapFactory.decodeStream(s, None, opts_bounds)
+            s.close()
+        else:
+            BitmapFactory.decodeFile(src_path, opts_bounds)
+        orig_w, orig_h = opts_bounds.outWidth, opts_bounds.outHeight
+        if orig_w <= 0 or orig_h <= 0:
+            raise ValueError(f"BitmapFactory 无法解码图片尺寸: {src_path}")
+
+        # ---- Step 2: 保存 OCR 原图（保持原始质量）----
+        opts_full = BitmapOpts()
+        opts_full.inSampleSize = 1
+        if is_content_uri:
+            s = open_stream()
+            bmp_full = BitmapFactory.decodeStream(s, None, opts_full)
+            s.close()
+        else:
+            bmp_full = BitmapFactory.decodeFile(src_path, opts_full)
+        if bmp_full is None:
+            raise ValueError("BitmapFactory 解码返回 null（原图）")
+        fos = FileOutputStream(ocr_path)
+        bmp_full.compress(CompressFormat.JPEG, 95, fos)
+        fos.flush(); fos.close()
+        bmp_full.recycle()
+
+        # ---- Step 3: 保存缩放 display 图（供 Kivy 显示）----
+        sample = 1
+        while orig_w // sample > max_dim or orig_h // sample > max_dim:
+            sample *= 2
+        opts_disp = BitmapOpts()
+        opts_disp.inSampleSize = sample
+        if is_content_uri:
+            s = open_stream()
+            bmp_disp = BitmapFactory.decodeStream(s, None, opts_disp)
+            s.close()
+        else:
+            bmp_disp = BitmapFactory.decodeFile(src_path, opts_disp)
+        if bmp_disp is None:
+            raise ValueError("BitmapFactory 解码返回 null（display）")
+        fos2 = FileOutputStream(display_path)
+        bmp_disp.compress(CompressFormat.JPEG, 90, fos2)
+        fos2.flush(); fos2.close()
+        disp_w = bmp_disp.getWidth()
+        disp_h = bmp_disp.getHeight()
+        bmp_disp.recycle()
+
+        return disp_w, disp_h
+
     def _prepare_image_bg(self, src_path):
         """
         后台线程：
-        1. Android 上复制到私有目录（绕过 Scoped Storage 限制）
-        2. PIL 将图片调整到最大 1920px 并转换为标准 RGB JPEG
-           （避免 GPU 纹理尺寸超限导致 Kivy Image 静默空白）
-        3. 完成后回主线程建 UI
+        - Android：用 BitmapFactory + ContentResolver 处理（支持所有格式 + content URI）
+        - PC：用 PIL 处理
+        ocr_path     → 原图（供腾讯 OCR API 识别）
+        display_path → 缩放 JPEG（供 Kivy Image 控件显示）
         """
         try:
-            # Step 1：确保可访问的本地文件路径
-            if platform == 'android':
-                local_path = self._copy_to_local(src_path)
-            else:
-                local_path = src_path
+            ocr_path     = self.get_safe_image_path()
+            display_path = self._get_display_image_path()
+            img_w, img_h = 0, 0
 
-            if not os.path.exists(local_path):
+            if platform == 'android':
+                # Android：原生 BitmapFactory 处理（兼容 content URI / HEIC / WebP 等）
+                try:
+                    img_w, img_h = self._android_process_image(
+                        src_path, ocr_path, display_path
+                    )
+                except Exception as e:
+                    print(f"[Android BitmapFactory 失败] {e}")
+                    # 最后兜底：用 shutil 复制，display 回退到 ocr_path
+                    try:
+                        shutil.copy(src_path, ocr_path)
+                    except Exception:
+                        pass
+                    display_path = ocr_path
+            else:
+                # PC：PIL 处理
+                try:
+                    from PIL import Image as PILImage, ImageOps
+                    pil_img = PILImage.open(src_path)
+                    try:
+                        pil_img = ImageOps.exif_transpose(pil_img)
+                    except Exception:
+                        pass
+                    if pil_img.mode != 'RGB':
+                        pil_img = pil_img.convert('RGB')
+                    # 原图存 ocr_path
+                    pil_img.save(ocr_path, 'JPEG', quality=95)
+                    # 缩放版存 display_path
+                    img_w, img_h = pil_img.size
+                    MAX_DIM = 1920
+                    if img_w > MAX_DIM or img_h > MAX_DIM:
+                        scale = MAX_DIM / max(img_w, img_h)
+                        img_w = int(img_w * scale)
+                        img_h = int(img_h * scale)
+                        pil_img = pil_img.resize((img_w, img_h), PILImage.LANCZOS)
+                    pil_img.save(display_path, 'JPEG', quality=90)
+                    pil_img.close()
+                except Exception as e:
+                    print(f"[PIL 处理失败] {e}")
+                    shutil.copy(src_path, ocr_path)
+                    display_path = ocr_path
+
+            if not os.path.exists(ocr_path):
                 Clock.schedule_once(
                     lambda dt: self.show_dialog("图片文件不存在，请重新选择"), 0
                 )
                 return
 
-            # Step 2：PIL 压缩 + 转换（解决 GPU 纹理超限 & SDL2 格式兼容性）
-            try:
-                from PIL import Image as PILImage
-                pil_img = PILImage.open(local_path)
-                # 修正 EXIF 旋转（手机竖拍图片）
-                try:
-                    from PIL import ImageOps
-                    pil_img = ImageOps.exif_transpose(pil_img)
-                except Exception:
-                    pass
-                # 转为标准 RGB（去除 RGBA/P/CMYK 等 SDL2 不支持的模式）
-                if pil_img.mode != 'RGB':
-                    pil_img = pil_img.convert('RGB')
-                img_w, img_h = pil_img.size
-                # 缩放到最大 1920px（避免超出 GPU 纹理限制，同时保持 OCR 精度）
-                MAX_DIM = 1920
-                if img_w > MAX_DIM or img_h > MAX_DIM:
-                    scale = MAX_DIM / max(img_w, img_h)
-                    img_w = int(img_w * scale)
-                    img_h = int(img_h * scale)
-                    pil_img = pil_img.resize((img_w, img_h), PILImage.LANCZOS)
-                # 覆盖保存为标准 JPEG（Kivy/SDL2 一定能加载）
-                pil_img.save(local_path, 'JPEG', quality=90)
-                pil_img.close()
-            except Exception as e:
-                print(f"[PIL 预处理失败] {e}")
-                img_w, img_h = 0, 0
-
-            # Step 3：回主线程建 UI
             Clock.schedule_once(
-                lambda dt: self._start_preview(local_path, img_w, img_h), 0
+                lambda dt: self._start_preview(display_path, ocr_path, img_w, img_h), 0
             )
         except Exception as e:
             Clock.schedule_once(
                 lambda dt, msg=str(e): self.show_dialog(f"图片准备失败: {msg}"), 0
             )
 
-    def _start_preview(self, img_path, img_w, img_h):
+    def _start_preview(self, display_path, ocr_path, img_w, img_h):
         """主线程：隐藏主界面按钮，延迟一帧后建预览 UI"""
-        self.current_img_path = img_path
+        self.current_img_path = ocr_path    # OCR 始终用原图
         self.img_width = img_w
         self.img_height = img_h
         self.root.ids.btn_container.opacity = 0
         # 延迟一帧让按钮隐藏完成后再建 UI，避免布局抖动
-        Clock.schedule_once(lambda dt: self._load_preview_layout(img_path), 0.05)
+        Clock.schedule_once(
+            lambda dt: self._load_preview_layout(display_path, ocr_path), 0.05
+        )
 
     def on_image_selected(self, img_path):
         """拍照回调（plyer camera，已在主线程）"""
@@ -549,13 +631,19 @@ class ReceiptApp(MDApp):
             target=self._prepare_image_bg, args=(img_path,), daemon=True
         ).start()
 
-    def _load_preview_layout(self, img_path):
-        """主线程：建预览 UI（图片已由 PIL 预处理，尺寸存于 self.img_width/height）"""
+    def _load_preview_layout(self, display_path, ocr_path=None):
+        """
+        主线程：建预览 UI
+        display_path - PIL 处理后的图片，供 Kivy Image 显示
+        ocr_path     - 原始图片，供腾讯 OCR API 使用（若为 None 则与 display_path 相同）
+        """
+        if ocr_path is None:
+            ocr_path = display_path
         self.preview_layout = FloatLayout(size_hint=(1, 1))
 
         # 图片控件（nocache=True 防止 Kivy 复用旧纹理缓存）
         img_widget = Image(
-            source=img_path,
+            source=display_path,
             size_hint=(0.9, 0.7),
             pos_hint={'center_x': 0.5, 'center_y': 0.58},
             allow_stretch=True,
@@ -610,8 +698,8 @@ class ReceiptApp(MDApp):
 
         self.root.add_widget(self.preview_layout)
 
-        # OCR 在后台线程中执行（已重构，不阻塞主线程）
-        Clock.schedule_once(lambda dt: self.ocr_recognize(img_path), 0.3)
+        # OCR 使用原始图片路径（非 PIL 处理版），避免二次编码影响识别
+        Clock.schedule_once(lambda dt: self.ocr_recognize(ocr_path), 0.3)
 
     def cancel_operation(self, instance):
         """取消操作"""
