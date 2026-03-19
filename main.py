@@ -416,22 +416,22 @@ class ReceiptApp(MDApp):
         from android import mActivity
         from android.activity import bind as activity_bind
 
-        # jnius 中内部类/父类继承的静态字段需从声明该字段的类加载
+        # 只加载必要的 Java 类，避免从接口/父类继承链取常量不稳定的问题
         Intent        = autoclass('android.content.Intent')
         MediaStore    = autoclass('android.provider.MediaStore')
-        # EXTERNAL_CONTENT_URI 定义在 Images$Media，其余列名定义在 MediaColumns
         ImgMedia      = autoclass('android.provider.MediaStore$Images$Media')
-        MediaColumns  = autoclass('android.provider.MediaStore$MediaColumns')
         ContentValues = autoclass('android.content.ContentValues')
         Context       = autoclass('android.content.Context')
 
         context = cast(Context, mActivity.getApplicationContext())
 
         # 在 MediaStore 中插入一条待写入的图片记录，取得 content:// URI
-        # 列名从 MediaColumns 获取，避免 jnius 通过子类继承获取返回 null 的问题
+        # 列名直接用字符串常量，规避 jnius 通过接口/父类取静态字段时类型不稳定的 bug：
+        #   MediaStore.MediaColumns.DISPLAY_NAME = "_display_name"
+        #   MediaStore.MediaColumns.MIME_TYPE    = "mime_type"
         values = ContentValues()
-        values.put(MediaColumns.DISPLAY_NAME, 'receipt_temp.jpg')
-        values.put(MediaColumns.MIME_TYPE, 'image/jpeg')
+        values.put('_display_name', 'receipt_temp.jpg')
+        values.put('mime_type', 'image/jpeg')
         self._camera_output_uri = context.getContentResolver().insert(
             ImgMedia.EXTERNAL_CONTENT_URI, values
         )
@@ -440,7 +440,12 @@ class ReceiptApp(MDApp):
 
         # 启动系统相机，指定输出到 content:// URI（避免 FileUriExposedException）
         intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, self._camera_output_uri)
+        # 显式 cast 为 Parcelable，帮助 jnius 解析正确的 putExtra(String, Parcelable) 重载
+        # 否则 jnius 可能错误匹配 putExtra(String, String) 并报类型错误
+        intent.putExtra(
+            MediaStore.EXTRA_OUTPUT,
+            cast('android.os.Parcelable', self._camera_output_uri)
+        )
 
         REQUEST_CAMERA = 0x2001
 
